@@ -1,0 +1,28 @@
+# Python / Virtual Environment
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+.npm/
+
+# Environment Variables & Secrets
+.env
+users.db
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Testing scripts
+test_*.py
+grid_search.py
+
+# ML Models
+*.pkl

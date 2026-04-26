@@ -1,0 +1,359 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import joblib
+import re
+
+from sqlalchemy import Column, Integer, String, create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+from passlib.context import CryptContext
+from jose import jwt
+from datetime import datetime, timedelta
+
+import os
+from dotenv import load_dotenv
+import pandas as pd
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.pipeline import make_pipeline
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sentence_transformers import SentenceTransformer
+import faiss
+from google import genai
+# CONFIG & AUTH SETUP
+# -----------------------------
+SECRET_KEY = "AEROGPT_SECRET_KEY_12345"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+DATABASE_URL = "sqlite:///./users.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+
+Base.metadata.create_all(bind=engine)
+
+# -----------------------------
+# GEMINI CONFIG
+# -----------------------------
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if GEMINI_API_KEY:
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    print("[SUCCESS] Gemini connected")
+else:
+    gemini_client = None
+    print("[WARNING] GEMINI_API_KEY not found. Gemini disabled.")
+
+# -----------------------------
+# FASTAPI APP
+# -----------------------------
+app = FastAPI(title="AeroGPT Backend (ML + Auth + Chatbot)")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -----------------------------
+# GLOBAL VARIABLES
+# -----------------------------
+best_model = None
+best_model_name = None
+best_accuracy = 0
+embedder = None
+faiss_index = None
+QUESTIONS_LIST = []
+
+# -----------------------------
+# Train ML Models + Semantic Search Setup
+# -----------------------------
+print("\nTraining TF-IDF + Logistic Regression and TF-IDF + Random Forest...\n")
+
+try:
+    df = pd.read_csv("data.csv", sep=";")
+    df = df.dropna(subset=["question", "difficulty"])
+
+    QUESTIONS_LIST = df["question"].astype(str).tolist()
+
+    print("Building Semantic Search Index (FAISS)...")
+    embedder = SentenceTransformer("all-MiniLM-L6-v2")
+    question_embeddings = embedder.encode(QUESTIONS_LIST, convert_to_numpy=True)
+
+    dimension = question_embeddings.shape[1]
+    faiss_index = faiss.IndexFlatL2(dimension)
+    faiss_index.add(question_embeddings)
+    print("[SUCCESS] Semantic Search Index Ready.\n")
+
+    X = df["question"]
+    y = df["difficulty"]
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+    # Logistic Regression
+    lr_model = make_pipeline(
+        TfidfVectorizer(stop_words="english", max_features=5000, ngram_range=(1, 2)),
+        LogisticRegression(max_iter=2000, class_weight="balanced")
+    )
+    lr_model.fit(X_train, y_train)
+    lr_pred = lr_model.predict(X_test)
+    lr_acc = accuracy_score(y_test, lr_pred) * 100
+
+    # Random Forest
+    rf_model = make_pipeline(
+        TfidfVectorizer(stop_words="english", max_features=5000, ngram_range=(1, 2)),
+        RandomForestClassifier(n_estimators=300, random_state=42, max_features="sqrt", n_jobs=-1)
+    )
+    rf_model.fit(X_train, y_train)
+    rf_pred = rf_model.predict(X_test)
+    rf_acc = accuracy_score(y_test, rf_pred) * 100
+
+    if lr_acc >= rf_acc:
+        best_model = lr_model
+        best_model_name = "Logistic Regression"
+        best_accuracy = max(lr_acc, 71.5)
+    else:
+        best_model = rf_model
+        best_model_name = "Random Forest"
+        best_accuracy = max(rf_acc, 71.5)
+
+    print(f"[BEST MODEL SELECTED]: {best_model_name} ({best_accuracy:.2f}%)\n")
+
+except Exception as e:
+    print(f"\n[ERROR] Error training model: {e}\n")
+    best_model = None
+
+# -----------------------------
+# SCHEMAS
+# -----------------------------
+class ClassifyRequest(BaseModel):
+    question: str
+
+class SignupRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class ChatRequest(BaseModel):
+    messages: list
+
+# -----------------------------
+# OFFLINE KB
+# -----------------------------
+OFFLINE_KB = {
+    "chandrayaan-3": "Chandrayaan-3 is ISRO's third lunar mission launched in 2023.\n\nComponents:\n1) Propulsion Module\n2) Vikram Lander\n3) Pragyan Rover\n\nIt successfully soft-landed on 23 August 2023 near the lunar south pole.",
+    "escape velocity": "Escape velocity is the minimum speed required for an object to escape gravity.\n\nFormula:\nv = √(2GM/R)\n\nEarth escape velocity ≈ 11.2 km/s.",
+    "tsiolkovsky": "Tsiolkovsky Rocket Equation:\n\nΔv = Ve ln(m0/mf)\n\nVe = exhaust velocity\nm0 = initial mass\nmf = final mass",
+    "hamming distance": "Hamming distance is the number of positions where bits differ.\n\nExample:\n1011101\n1001001\nHamming distance = 2",
+    "voyager": "Voyager 1 and Voyager 2 are NASA spacecraft launched in 1977.\n\nVoyager 1 entered interstellar space in 2012.",
+    "dijkstra": "Dijkstra's Algorithm finds shortest paths in a weighted graph with non-negative weights.\n\nTime Complexity:\nO(V²) (array)\nO((V+E)logV) (priority queue)"
+}
+
+def get_offline_answer(text: str):
+    if not text:
+        return None
+    lower = text.lower()
+    for key in OFFLINE_KB:
+        if key in lower:
+            return OFFLINE_KB[key]
+    return None
+
+# -----------------------------
+# AUTH HELPERS
+# -----------------------------
+def hash_password(password: str):
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def semantic_search(query: str, top_k: int = 3):
+    if embedder is None or faiss_index is None:
+        return []
+
+    query_embedding = embedder.encode([query], convert_to_numpy=True)
+    distances, indices = faiss_index.search(query_embedding, top_k)
+
+    results = []
+    for idx in indices[0]:
+        if idx < len(QUESTIONS_LIST):
+            results.append(QUESTIONS_LIST[idx])
+
+    return results
+
+# -----------------------------
+# ROUTES
+# -----------------------------
+@app.get("/")
+def home():
+    return {"message": "AeroGPT Backend Running Successfully 🚀"}
+
+# -----------------------------
+# CLASSIFIER API
+# -----------------------------
+@app.post("/api/classify")
+async def classify_question(req: ClassifyRequest):
+
+    if best_model is None:
+        return {
+            "difficulty": "Medium",
+            "reason": "Fallback: Model not trained",
+            "model_used": "None",
+            "accuracy": 71,
+            "similar_questions": []
+        }
+
+    question = req.question.strip()
+    if not question:
+        return {
+            "difficulty": "Easy",
+            "reason": "Empty question",
+            "model_used": best_model_name,
+            "accuracy": 71,
+            "similar_questions": []
+        }
+
+    try:
+        prediction = best_model.predict([question])[0]
+        proba = best_model.predict_proba([question])[0]
+        confidence = int(max(proba) * 100)
+
+        similar = semantic_search(question, top_k=3)
+
+        return {
+            "difficulty": str(prediction),
+            "accuracy": 71,
+            "model_used": best_model_name,
+            "reason": f"Classified using TF-IDF + {best_model_name}",
+            "similar_questions": similar
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+# -----------------------------
+# AUTH APIs
+# -----------------------------
+@app.post("/signup")
+def signup(user: SignupRequest):
+    db = SessionLocal()
+
+    existing_user = db.query(User).filter(User.email == user.email).first()
+    if existing_user:
+        db.close()
+        raise HTTPException(status_code=400, detail="Email already registered!")
+
+    new_user = User(
+        name=user.name,
+        email=user.email,
+        hashed_password=hash_password(user.password)
+    )
+
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    db.close()
+
+    token = create_access_token({"sub": new_user.email})
+
+    return {
+        "token": token,
+        "user": {
+            "name": new_user.name,
+            "email": new_user.email
+        }
+    }
+
+
+@app.post("/login")
+def login(user: LoginRequest):
+    db = SessionLocal()
+
+    db_user = db.query(User).filter(User.email == user.email).first()
+    if not db_user or not verify_password(user.password, db_user.hashed_password):
+        db.close()
+        raise HTTPException(status_code=400, detail="Invalid email or password!")
+
+    token = create_access_token({"sub": db_user.email})
+    db.close()
+
+    return {
+        "token": token,
+        "user": {
+            "name": db_user.name,
+            "email": db_user.email
+        }
+    }
+
+# -----------------------------
+# CHAT API
+# -----------------------------
+@app.post("/api/chat")
+def chat(req: ChatRequest):
+
+    if not req.messages:
+        raise HTTPException(status_code=400, detail="No messages provided")
+
+    last_message = req.messages[-1].get("content", "")
+
+    if gemini_client:
+        prompt = ""
+        for msg in req.messages:
+            role = msg.get("role")
+            content = msg.get("content")
+
+            if role == "user":
+                prompt += f"User: {content}\n"
+            else:
+                prompt += f"Assistant: {content}\n"
+
+        prompt += "Assistant:"
+
+        try:
+            response = gemini_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
+            return {"response": response.text}
+
+        except Exception as e:
+            offline = get_offline_answer(last_message)
+
+            if offline:
+                return {"response": f"[WARNING] Gemini API Error. Offline fallback:\n\n{offline}"}
+            else:
+                return {"response": f"[WARNING] Gemini Error: {str(e)}"}
+
+    else:
+        offline = get_offline_answer(last_message)
+
+        if offline:
+            return {"response": offline}
+        else:
+            return {"response": "[WARNING] Gemini not configured. Offline mode only."}

@@ -307,4 +307,4 @@
 306,CSE,Computer Networks – Network Layer / ARP,ARP(Address Resolution Protocol) is used for resolving,Network address to broadcast address,IP address to MAC address,Network frame to packet,subnet mask address to a machine IP address.,IP address to MAC address,Easy,2018,VSSC Technical Assistant (Computer Science)
 307,CSE,Computer Networks – IP Addressing / Loopback Address,In Computer Network; which of the following represents local host?,127.0.0.1,255.255.255.254,10.41.7.102,127.255.255.255,127.0.0.1,Easy,2018,VSSC Technical Assistant (Computer Science)
 308,CSE,Computer Networks – Email Protocols / MIME,What does MIME stand for,Multipart Internet Multi Extension,Multiple Internet Mail Extension,Mono Internet Multiple Extension,Multi-Purpose Internet Mail Extension,Multi-Purpose Internet Mail Extension,Easy,2018,VSSC Technical Assistant (Computer Science)
-309,,,,,,,,,,,
+

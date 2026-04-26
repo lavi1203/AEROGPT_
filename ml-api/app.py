@@ -88,7 +88,7 @@ QUESTIONS_LIST = []
 print("\nTraining TF-IDF + Logistic Regression and TF-IDF + Random Forest...\n")
 
 try:
-    df = pd.read_csv("data.csv", sep=";")
+    df = pd.read_csv("data1.csv", sep=",", on_bad_lines="skip", engine="python")
     df = df.dropna(subset=["question", "difficulty"])
 
     QUESTIONS_LIST = df["question"].astype(str).tolist()
@@ -127,11 +127,11 @@ try:
     if lr_acc >= rf_acc:
         best_model = lr_model
         best_model_name = "Logistic Regression"
-        best_accuracy = max(lr_acc, 71.5)
+        best_accuracy = lr_acc
     else:
         best_model = rf_model
         best_model_name = "Random Forest"
-        best_accuracy = max(rf_acc, 71.5)
+        best_accuracy = rf_acc
 
     print(f"[BEST MODEL SELECTED]: {best_model_name} ({best_accuracy:.2f}%)\n")
 
@@ -225,7 +225,7 @@ async def classify_question(req: ClassifyRequest):
             "difficulty": "Medium",
             "reason": "Fallback: Model not trained",
             "model_used": "None",
-            "accuracy": 71,
+            "accuracy": best_accuracy,
             "similar_questions": []
         }
 
@@ -235,7 +235,7 @@ async def classify_question(req: ClassifyRequest):
             "difficulty": "Easy",
             "reason": "Empty question",
             "model_used": best_model_name,
-            "accuracy": 71,
+            "accuracy": best_accuracy,
             "similar_questions": []
         }
 
@@ -248,7 +248,7 @@ async def classify_question(req: ClassifyRequest):
 
         return {
             "difficulty": str(prediction),
-            "accuracy": 71,
+            "accuracy": best_accuracy,
             "model_used": best_model_name,
             "reason": f"Classified using TF-IDF + {best_model_name}",
             "similar_questions": similar

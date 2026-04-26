@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Brain, BarChart2, AlertCircle } from "lucide-react";
+import config from "../config";
 
 export default function Classifier() {
   const [question, setQuestion] = useState("");
@@ -15,8 +16,7 @@ export default function Classifier() {
     setResult(null);
 
     try {
-      const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-      const res = await fetch(`${API_URL}/api/classify`, {
+      const res = await fetch(`${config.API_URL}/api/classify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question }),

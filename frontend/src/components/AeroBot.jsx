@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { MessageSquare, Send, Bot, User, Trash2 } from "lucide-react";
+import config from "../config";
 
 
 
@@ -52,8 +53,7 @@ export default function AeroBot() {
 
     // BACKEND CALL
     try {
-      const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-      const response = await fetch(`${API_URL}/api/chat`, {
+      const response = await fetch(`${config.API_URL}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: newMessages.slice(1) })

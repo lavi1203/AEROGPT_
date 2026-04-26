@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import joblib
 import re
+import asyncio
+from contextlib import asynccontextmanager
 
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -18,19 +20,20 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import accuracy_score
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sentence_transformers import SentenceTransformer
 import faiss
 from google import genai
+
 # CONFIG & AUTH SETUP
-# -----------------------------
+load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY", "fallback_dev_key")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-DATABASE_URL = "sqlite:///./users.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./users.db")
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
@@ -46,12 +49,8 @@ class User(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# -----------------------------
 # GEMINI CONFIG
-# -----------------------------
-load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
 if GEMINI_API_KEY:
     gemini_client = genai.Client(api_key=GEMINI_API_KEY)
     print("[SUCCESS] Gemini connected")
@@ -59,10 +58,86 @@ else:
     gemini_client = None
     print("[WARNING] GEMINI_API_KEY not found. Gemini disabled.")
 
+# GLOBAL VARIABLES
+best_model = None
+best_model_name = None
+best_accuracy = 0
+embedder = None
+faiss_index = None
+QUESTIONS_LIST = []
+models_ready = False
+
+# -----------------------------
+# BACKGROUND LOADER
+# -----------------------------
+def load_all_models():
+    global best_model, best_model_name, best_accuracy
+    global embedder, faiss_index, QUESTIONS_LIST, models_ready
+
+    print("\n[STARTUP] Loading models in background...\n")
+
+    try:
+        df = pd.read_csv("data1.csv", sep=",", on_bad_lines="skip", engine="python")
+        df = df.dropna(subset=["question", "difficulty"])
+        QUESTIONS_LIST = df["question"].astype(str).tolist()
+
+        print("[STARTUP] Building Semantic Search Index (FAISS)...")
+        embedder = SentenceTransformer("all-MiniLM-L6-v2")
+        question_embeddings = embedder.encode(QUESTIONS_LIST, convert_to_numpy=True)
+        dimension = question_embeddings.shape[1]
+        faiss_index = faiss.IndexFlatL2(dimension)
+        faiss_index.add(question_embeddings)
+        print("[SUCCESS] Semantic Search Index Ready.")
+
+        X = df["question"]
+        y = df["difficulty"]
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+
+        lr_model = make_pipeline(
+            TfidfVectorizer(stop_words="english", max_features=5000, ngram_range=(1, 2)),
+            LogisticRegression(max_iter=2000, class_weight="balanced")
+        )
+        lr_model.fit(X_train, y_train)
+        lr_acc = accuracy_score(y_test, lr_model.predict(X_test)) * 100
+
+        rf_model = make_pipeline(
+            TfidfVectorizer(stop_words="english", max_features=5000, ngram_range=(1, 2)),
+            RandomForestClassifier(n_estimators=300, random_state=42, max_features="sqrt", n_jobs=-1)
+        )
+        rf_model.fit(X_train, y_train)
+        rf_acc = accuracy_score(y_test, rf_model.predict(X_test)) * 100
+
+        if lr_acc >= rf_acc:
+            best_model = lr_model
+            best_model_name = "Logistic Regression"
+            best_accuracy = lr_acc
+        else:
+            best_model = rf_model
+            best_model_name = "Random Forest"
+            best_accuracy = rf_acc
+
+        print(f"[BEST MODEL]: {best_model_name} ({best_accuracy:.2f}%)")
+        models_ready = True
+
+    except Exception as e:
+        print(f"[ERROR] Model loading failed: {e}")
+        models_ready = False
+
+# -----------------------------
+# LIFESPAN — loads models after port opens
+# -----------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, load_all_models)
+    yield
+
 # -----------------------------
 # FASTAPI APP
 # -----------------------------
-app = FastAPI(title="AeroGPT Backend (ML + Auth + Chatbot)")
+app = FastAPI(title="AeroGPT Backend", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,73 +146,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# -----------------------------
-# GLOBAL VARIABLES
-# -----------------------------
-best_model = None
-best_model_name = None
-best_accuracy = 0
-embedder = None
-faiss_index = None
-QUESTIONS_LIST = []
-
-# -----------------------------
-# Train ML Models + Semantic Search Setup
-# -----------------------------
-print("\nTraining TF-IDF + Logistic Regression and TF-IDF + Random Forest...\n")
-
-try:
-    df = pd.read_csv("data1.csv", sep=",", on_bad_lines="skip", engine="python")
-    df = df.dropna(subset=["question", "difficulty"])
-
-    QUESTIONS_LIST = df["question"].astype(str).tolist()
-
-    print("Building Semantic Search Index (FAISS)...")
-    embedder = SentenceTransformer("all-MiniLM-L6-v2")
-    question_embeddings = embedder.encode(QUESTIONS_LIST, convert_to_numpy=True)
-
-    dimension = question_embeddings.shape[1]
-    faiss_index = faiss.IndexFlatL2(dimension)
-    faiss_index.add(question_embeddings)
-    print("[SUCCESS] Semantic Search Index Ready.\n")
-
-    X = df["question"]
-    y = df["difficulty"]
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-
-    # Logistic Regression
-    lr_model = make_pipeline(
-        TfidfVectorizer(stop_words="english", max_features=5000, ngram_range=(1, 2)),
-        LogisticRegression(max_iter=2000, class_weight="balanced")
-    )
-    lr_model.fit(X_train, y_train)
-    lr_pred = lr_model.predict(X_test)
-    lr_acc = accuracy_score(y_test, lr_pred) * 100
-
-    # Random Forest
-    rf_model = make_pipeline(
-        TfidfVectorizer(stop_words="english", max_features=5000, ngram_range=(1, 2)),
-        RandomForestClassifier(n_estimators=300, random_state=42, max_features="sqrt", n_jobs=-1)
-    )
-    rf_model.fit(X_train, y_train)
-    rf_pred = rf_model.predict(X_test)
-    rf_acc = accuracy_score(y_test, rf_pred) * 100
-
-    if lr_acc >= rf_acc:
-        best_model = lr_model
-        best_model_name = "Logistic Regression"
-        best_accuracy = lr_acc
-    else:
-        best_model = rf_model
-        best_model_name = "Random Forest"
-        best_accuracy = rf_acc
-
-    print(f"[BEST MODEL SELECTED]: {best_model_name} ({best_accuracy:.2f}%)\n")
-
-except Exception as e:
-    print(f"\n[ERROR] Error training model: {e}\n")
-    best_model = None
 
 # -----------------------------
 # SCHEMAS
@@ -196,15 +204,12 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
 def semantic_search(query: str, top_k: int = 3):
     if embedder is None or faiss_index is None:
         return []
-
     query_embedding = embedder.encode([query], convert_to_numpy=True)
     distances, indices = faiss_index.search(query_embedding, top_k)
-
     results = []
     for idx in indices[0]:
         if idx < len(QUESTIONS_LIST):
             results.append(QUESTIONS_LIST[idx])
-
     return results
 
 # -----------------------------
@@ -212,20 +217,23 @@ def semantic_search(query: str, top_k: int = 3):
 # -----------------------------
 @app.get("/")
 def home():
-    return {"message": "AeroGPT Backend Running Successfully 🚀"}
+    return {"message": "AeroGPT Backend Running Successfully 🚀", "models_ready": models_ready}
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "models_ready": models_ready}
 
 # -----------------------------
 # CLASSIFIER API
 # -----------------------------
 @app.post("/api/classify")
 async def classify_question(req: ClassifyRequest):
-
-    if best_model is None:
+    if not models_ready or best_model is None:
         return {
             "difficulty": "Medium",
-            "reason": "Fallback: Model not trained",
+            "reason": "Models still loading, please try again in a moment",
             "model_used": "None",
-            "accuracy": best_accuracy,
+            "accuracy": 0,
             "similar_questions": []
         }
 
@@ -242,8 +250,6 @@ async def classify_question(req: ClassifyRequest):
     try:
         prediction = best_model.predict([question])[0]
         proba = best_model.predict_proba([question])[0]
-        confidence = int(max(proba) * 100)
-
         similar = semantic_search(question, top_k=3)
 
         return {
@@ -253,7 +259,6 @@ async def classify_question(req: ClassifyRequest):
             "reason": f"Classified using TF-IDF + {best_model_name}",
             "similar_questions": similar
         }
-
     except Exception as e:
         return {"error": str(e)}
 
@@ -263,7 +268,6 @@ async def classify_question(req: ClassifyRequest):
 @app.post("/signup")
 def signup(user: SignupRequest):
     db = SessionLocal()
-
     existing_user = db.query(User).filter(User.email == user.email).first()
     if existing_user:
         db.close()
@@ -274,27 +278,17 @@ def signup(user: SignupRequest):
         email=user.email,
         hashed_password=hash_password(user.password)
     )
-
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
     db.close()
 
     token = create_access_token({"sub": new_user.email})
-
-    return {
-        "token": token,
-        "user": {
-            "name": new_user.name,
-            "email": new_user.email
-        }
-    }
-
+    return {"token": token, "user": {"name": new_user.name, "email": new_user.email}}
 
 @app.post("/login")
 def login(user: LoginRequest):
     db = SessionLocal()
-
     db_user = db.query(User).filter(User.email == user.email).first()
     if not db_user or not verify_password(user.password, db_user.hashed_password):
         db.close()
@@ -302,21 +296,13 @@ def login(user: LoginRequest):
 
     token = create_access_token({"sub": db_user.email})
     db.close()
-
-    return {
-        "token": token,
-        "user": {
-            "name": db_user.name,
-            "email": db_user.email
-        }
-    }
+    return {"token": token, "user": {"name": db_user.name, "email": db_user.email}}
 
 # -----------------------------
 # CHAT API
 # -----------------------------
 @app.post("/api/chat")
 def chat(req: ChatRequest):
-
     if not req.messages:
         raise HTTPException(status_code=400, detail="No messages provided")
 
@@ -327,12 +313,10 @@ def chat(req: ChatRequest):
         for msg in req.messages:
             role = msg.get("role")
             content = msg.get("content")
-
             if role == "user":
                 prompt += f"User: {content}\n"
             else:
                 prompt += f"Assistant: {content}\n"
-
         prompt += "Assistant:"
 
         try:
@@ -341,18 +325,14 @@ def chat(req: ChatRequest):
                 contents=prompt
             )
             return {"response": response.text}
-
         except Exception as e:
             offline = get_offline_answer(last_message)
-
             if offline:
                 return {"response": f"[WARNING] Gemini API Error. Offline fallback:\n\n{offline}"}
             else:
                 return {"response": f"[WARNING] Gemini Error: {str(e)}"}
-
     else:
         offline = get_offline_answer(last_message)
-
         if offline:
             return {"response": offline}
         else:

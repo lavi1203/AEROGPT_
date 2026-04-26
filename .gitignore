@@ -26,3 +26,8 @@ grid_search.py
 
 # ML Models
 *.pkl
+
+# Open .gitignore and make sure these lines exist:
+.env
+users.db
+__pycache__/

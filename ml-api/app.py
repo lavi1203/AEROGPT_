@@ -26,7 +26,7 @@ import faiss
 from google import genai
 # CONFIG & AUTH SETUP
 # -----------------------------
-SECRET_KEY = "AEROGPT_SECRET_KEY_12345"
+SECRET_KEY = os.getenv("SECRET_KEY", "fallback_dev_key")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 

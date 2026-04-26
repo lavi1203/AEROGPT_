@@ -147,7 +147,12 @@ app = FastAPI(title="AeroGPT Backend", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://aerogpt-three.vercel.app",  # Vercel (no trailing slash is usually required for CORS)
+        "https://aerogpt-three.vercel.app/", # Just in case
+        "http://localhost:3000",             # local React dev server
+        "http://localhost:5173"              # Vite default port
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

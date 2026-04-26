@@ -74,6 +74,9 @@ def load_all_models():
     global best_model, best_model_name, best_accuracy
     global embedder, faiss_index, QUESTIONS_LIST, models_ready
 
+    # Skip semantic search on low memory — saves ~400MB
+    SKIP_SEMANTIC = os.getenv("SKIP_SEMANTIC", "true") == "true"
+
     print("\n[STARTUP] Loading models in background...\n")
 
     try:
@@ -81,13 +84,16 @@ def load_all_models():
         df = df.dropna(subset=["question", "difficulty"])
         QUESTIONS_LIST = df["question"].astype(str).tolist()
 
-        print("[STARTUP] Building Semantic Search Index (FAISS)...")
-        embedder = SentenceTransformer("all-MiniLM-L6-v2")
-        question_embeddings = embedder.encode(QUESTIONS_LIST, convert_to_numpy=True)
-        dimension = question_embeddings.shape[1]
-        faiss_index = faiss.IndexFlatL2(dimension)
-        faiss_index.add(question_embeddings)
-        print("[SUCCESS] Semantic Search Index Ready.")
+        if not SKIP_SEMANTIC:
+            print("[STARTUP] Building Semantic Search Index (FAISS)...")
+            embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            question_embeddings = embedder.encode(QUESTIONS_LIST, convert_to_numpy=True)
+            dimension = question_embeddings.shape[1]
+            faiss_index = faiss.IndexFlatL2(dimension)
+            faiss_index.add(question_embeddings)
+            print("[SUCCESS] Semantic Search Index Ready.")
+        else:
+            print("[STARTUP] Skipping Semantic Search Index (FAISS) to save memory.")
 
         X = df["question"]
         y = df["difficulty"]

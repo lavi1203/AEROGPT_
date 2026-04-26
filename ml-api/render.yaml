@@ -9,3 +9,5 @@ services:
         sync: false
       - key: SECRET_KEY
         sync: false
+      - key: SKIP_SEMANTIC
+        value: "true"

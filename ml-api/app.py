@@ -23,8 +23,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sentence_transformers import SentenceTransformer
-import faiss
 from google import genai
 
 # CONFIG & AUTH SETUP
@@ -86,6 +84,8 @@ def load_all_models():
 
         if not SKIP_SEMANTIC:
             print("[STARTUP] Building Semantic Search Index (FAISS)...")
+            from sentence_transformers import SentenceTransformer
+            import faiss
             embedder = SentenceTransformer("all-MiniLM-L6-v2")
             question_embeddings = embedder.encode(QUESTIONS_LIST, convert_to_numpy=True)
             dimension = question_embeddings.shape[1]

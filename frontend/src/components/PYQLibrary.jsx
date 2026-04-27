@@ -169,7 +169,8 @@ export default function PYQLibrary() {
 
         {currentItems.map((q) => {
 
-          const correctKey = String(q.ans).toLowerCase();
+          const correctKey = String(q.ans_key).toLowerCase();
+          console.log("ans:", q.ans_key, "| correctKey:", correctKey);
           const isSubmitted = submitted.has(q.no);
           const selected = selectedAns[q.no];
 

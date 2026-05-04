@@ -6,7 +6,7 @@ services:
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: GEMINI_API_KEY
-        sync: false
+        value: "AIzaSyCfJ9kMuf_wWNQ-CWD0k_b7ckFYwmTFQvk"
       - key: SECRET_KEY
         sync: false
       - key: SKIP_SEMANTIC

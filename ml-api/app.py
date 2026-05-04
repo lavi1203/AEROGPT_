@@ -1,3 +1,4 @@
+# Updated dataset for 'derive' keyword to give Hard difficulty
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -93,7 +94,7 @@ def load_all_models():
             faiss_index.add(question_embeddings)
             print("[SUCCESS] Semantic Search Index Ready.")
         else:
-            print("[STARTUP] Skipping Semantic Search Index (FAISS) to save memory.")
+            print("[STARTUP] Skipping Semantic Search Index (FAISS) to save memory. Will load on demand if needed.")
 
         X = df["question"]
         y = df["difficulty"]
@@ -213,8 +214,22 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def semantic_search(query: str, top_k: int = 3):
+    global embedder, faiss_index
     if embedder is None or faiss_index is None:
-        return []
+        print("[ON-DEMAND] Loading Semantic Search Index...")
+        try:
+            from sentence_transformers import SentenceTransformer
+            import faiss
+            embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            question_embeddings = embedder.encode(QUESTIONS_LIST, convert_to_numpy=True)
+            dimension = question_embeddings.shape[1]
+            faiss_index = faiss.IndexFlatL2(dimension)
+            faiss_index.add(question_embeddings)
+            print("[SUCCESS] On-demand Semantic Search Index Ready.")
+        except Exception as e:
+            print(f"[ERROR] Failed to load semantic search: {e}")
+            return []
+
     query_embedding = embedder.encode([query], convert_to_numpy=True)
     distances, indices = faiss_index.search(query_embedding, top_k)
     results = []
@@ -261,7 +276,11 @@ async def classify_question(req: ClassifyRequest):
     try:
         prediction = best_model.predict([question])[0]
         proba = best_model.predict_proba([question])[0]
-        similar = semantic_search(question, top_k=3)
+        
+        if "pyq library" in question.lower() or "pyq" in question.lower():
+            similar = semantic_search(question, top_k=3)
+        else:
+            similar = []
 
         return {
             "difficulty": str(prediction),
@@ -332,7 +351,7 @@ def chat(req: ChatRequest):
 
         try:
             response = gemini_client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-1.5-flash",
                 contents=prompt
             )
             return {"response": response.text}
